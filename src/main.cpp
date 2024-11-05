@@ -1,92 +1,117 @@
-#include <TensorFlowLite.h>
-#include "model.h" 
+#include <Arduino.h>
+#include <FirebaseClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
 
-#include "tensorflow/lite/micro/all_ops_resolver.h"
-#include "tensorflow/lite/micro/micro_error_reporter.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/version.h"
+#define FIREBASE_HOST "psdatabase-fb5fe-default-rtdb.firebaseio.com"
+#define FIREBASE_AUTH "AIzaSyAeCOk_JF2QCtSxUsRS6gYeESK0Q6zNNnw"
+#define WIFI_SSID "Didik"
+#define WIFI_PASSWORD "22des*92"
 
-const int kTensorArenaSize = 2 * 1024;
-uint8_t tensor_arena[kTensorArenaSize];
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
 
-tflite::MicroErrorReporter micro_error_reporter;
-tflite::ErrorReporter* error_reporter = &micro_error_reporter;
+WiFiClientSecure ssl;
+DefaultNetwork network;
+AsyncClientClass client(ssl, getNetwork(network));
 
-const tflite::Model* model = tflite::GetModel(model_tflite);
-if (model->version() != TFLITE_SCHEMA_VERSION) {
-  error_reporter->Report("Model schema version tidak kompatibel!");
-  while (1);
+FirebaseApp app;
+RealtimeDatabase Database;
+AsyncResult result;
+LegacyToken dbSecret(FIREBASE_AUTH);
+
+void printError(int code, const String &msg)
+{
+    Firebase.printf("Error, msg: %s, code: %d\n", msg.c_str(), code);
 }
 
-tflite::MicroMutableOpResolver<5> resolver;
-resolver.AddBuiltin(tflite::BuiltinOperator_FULLY_CONNECTED, tflite::ops::micro::Register_FULLY_CONNECTED);
-resolver.AddBuiltin(tflite::BuiltinOperator_RELU, tflite::ops::micro::Register_RELU);
-resolver.AddBuiltin(tflite::BuiltinOperator_SOFTMAX, tflite::ops::micro::Register_SOFTMAX);
-
-tflite::MicroInterpreter interpreter(model, resolver, tensor_arena, kTensorArenaSize, error_reporter);
-
-// Menyediakan input dan output tensor
-TfLiteTensor* input = interpreter.input(0);
-TfLiteTensor* output = interpreter.output(0);
-
-// Setup fungsi
-void setup() {
+void setup(){
   Serial.begin(115200);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  // Initialize interpreter
-  TfLiteStatus allocate_status = interpreter.AllocateTensors();
-  if (allocate_status != kTfLiteOk) {
-    error_reporter->Report("AllocateTensors() failed");
-    while (1);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+      Serial.print(".");
+      delay(300);
   }
+  Serial.println();
+  Serial.print("Connected with IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.println();
+
+  Firebase.printf("Firebase Client v%s\n", FIREBASE_CLIENT_VERSION);
+
+  ssl.setInsecure();
+  initializeApp(client, app, getAuth(dbSecret));
+  app.getApp<RealtimeDatabase>(Database);
+  Database.url(FIREBASE_HOST);
+  client.setAsyncResult(result);
+
+  // Inisialisasi NTP
+  timeClient.begin();
+  timeClient.update();
+
+
+  pinMode(2, OUTPUT);
 }
 
-// Fungsi untuk memasukkan data sensor ke dalam model
-void readSensorData() {
-  // Contoh data input, ganti dengan pembacaan sensor sebenarnya
-  input->data.f[0] = 0.2;  // Nilai gas CO2
-  input->data.f[1] = 0.5;  // Nilai gas CO
-  input->data.f[2] = 0.7;  // Kualitas udara
-  input->data.f[3] = 0.3;  // Pembacaan sensor debu
-}
+void loop(){
+  timeClient.update();
 
-// Inferensi data
-void runInference() {
-  // Menjalankan inferensi
-  TfLiteStatus invoke_status = interpreter.Invoke();
-  if (invoke_status != kTfLiteOk) {
-    error_reporter->Report("Invoke gagal!");
-    return;
-  }
+  time_t epochTime = timeClient.getEpochTime();
+  struct tm timeinfo;
+  localtime_r(&epochTime, &timeinfo);
 
-  // Output: Mengambil nilai prediksi
-  float low = output->data.f[0];
-  float medium = output->data.f[1];
-  float high = output->data.f[2];
+  char dateTimeString[20];
+  snprintf(dateTimeString, sizeof(dateTimeString), "%04d-%02d-%02d %02d:%02d:%02d",
+            timeinfo.tm_year + 1900,
+            timeinfo.tm_mon + 1,
+            timeinfo.tm_mday,
+            timeinfo.tm_hour,
+            timeinfo.tm_min,
+            timeinfo.tm_sec);
 
-  // Tampilkan hasil prediksi
-  Serial.print("Kategori Rendah: "); Serial.println(low);
-  Serial.print("Kategori Sedang: "); Serial.println(medium);
-  Serial.print("Kategori Tinggi: "); Serial.println(high);
+  Serial.println(dateTimeString);
 
-  // Tentukan kategori berdasarkan nilai tertinggi
-  if (low > medium && low > high) {
-    Serial.println("Prediksi: Rendah");
-  } else if (medium > low && medium > high) {
-    Serial.println("Prediksi: Sedang");
+  int CO2value = random(0, 100);
+  int COvalue = random(0, 100);
+  int airQualityvalue = random(0, 100);
+  int dustvalue = random(0, 100);
+
+  Serial.println("Send data");
+
+  String jsonData = "{\"CO2\": " + String(CO2value) +
+                  ", \"CO\": " + String(COvalue) +
+                  ", \"airQuality\": " + String(airQualityvalue) +
+                  ", \"dust\": " + String(dustvalue) +
+                  ", \"timestamp\": " + String(epochTime) +
+                  ", \"datetime\": \"" + String(dateTimeString) + "\"}";
+
+  bool status = Database.push<String>(client, "/esptflite/data", jsonData);
+
+  // String pushCO2 = Database.push<int>(client, "/esptflite/CO2", CO2value);
+  // String pushCO = Database.push<int>(client, "/esptflite/CO", COvalue);
+  // String pushAirQuality = Database.push<int>(client, "/esptflite/airQuality", airQualityvalue);
+  // String pushDust = Database.push<int>(client, "/esptflite/dust", dustvalue);
+
+  String message = "";
+  if (CO2value < 30){
+    message = "LOW";
+  } else if (CO2value >= 30 && CO2value < 60){
+    message = "NORMAL";
   } else {
-    Serial.println("Prediksi: Tinggi");
+    message = "HIGH";
   }
-}
 
-void loop() {
-  // Membaca data dari sensor
-  readSensorData();
+  status = Database.set<String>(client, "/esptflite/status", message);
 
-  // Menjalankan inferensi
-  runInference();
+  delay(10000);
 
-  // Tunggu sebelum pembacaan berikutnya
-  delay(2000);
+  digitalWrite(2, HIGH);
+  delay(1000);
+  digitalWrite(2, LOW);
+  delay(1000);
 }
