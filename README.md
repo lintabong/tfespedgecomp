@@ -40,3 +40,9 @@ ESP32 mengambil data dari masing-masing sensor, menggunakan model TensorFlow Lit
 Untuk menginstal library yang dibutuhkan:
 ```bash
 pip install numpy pandas tensorflow scikit-learn matplotlib
+```
+
+
+```
+ xxd -i model.tflite > model.h
+```

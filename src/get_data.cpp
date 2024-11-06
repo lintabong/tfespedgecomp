@@ -15,8 +15,8 @@
 #define FIREBASE_ROOT "/esptflite/"
 #define FIREBASE_SEND_DATA_INTERVAL 3000
 #define MQ7_READ_SENSOR_INTERVAL 3000
-#define WIFI_SSID "Didik"
-#define WIFI_PASSWORD "22des*92"
+#define WIFI_SSID "Default"
+#define WIFI_PASSWORD "default234"
 #define MQ7_CHANNEL 2
 #define MQ135_CHANNEL 1
 #define GP2Y1014_CHANNEL 0

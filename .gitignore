@@ -7,3 +7,5 @@ __pycache__
 .env
 sensor_data.csv
 sensor_data_labeled.csv
+*.tflite
+*.h5

@@ -1,92 +1,214 @@
-  #include <TensorFlowLite.h>
-  #include "model.h" 
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME680.h>
+#include <Adafruit_ADS1X15.h>
+#include <TensorFlowLite.h>
+#include "model.h" 
 
-  #include "tensorflow/lite/micro/all_ops_resolver.h"
-  #include "tensorflow/lite/micro/micro_error_reporter.h"
-  #include "tensorflow/lite/micro/micro_interpreter.h"
-  #include "tensorflow/lite/schema/schema_generated.h"
-  #include "tensorflow/lite/version.h"
+#include <Arduino.h>
+#include <FirebaseClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
 
-  const int kTensorArenaSize = 2 * 1024;
-  uint8_t tensor_arena[kTensorArenaSize];
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME680.h>
 
-  tflite::MicroErrorReporter micro_error_reporter;
-  tflite::ErrorReporter* error_reporter = &micro_error_reporter;
+#define FIREBASE_HOST "psdatabase-fb5fe-default-rtdb.firebaseio.com"
+#define FIREBASE_AUTH "AIzaSyAeCOk_JF2QCtSxUsRS6gYeESK0Q6zNNnw"
+#define FIREBASE_ROOT "/esptflite/"
+#define FIREBASE_SEND_DATA_INTERVAL 3000
+#define MQ7_READ_SENSOR_INTERVAL 3000
+#define WIFI_SSID "Default"
+#define WIFI_PASSWORD "default234"
+#define MQ7_CHANNEL 2
+#define MQ135_CHANNEL 1
+#define GP2Y1014_CHANNEL 0
+#define GP2Y1014_LED_PIN 25
+#define MOVING_AVERAGE_WINDOW_SIZE 10
 
-  const tflite::Model* model = tflite::GetModel(model_tflite);
-  if (model->version() != TFLITE_SCHEMA_VERSION) {
-    error_reporter->Report("Model schema version tidak kompatibel!");
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
+
+WiFiClientSecure ssl;
+DefaultNetwork network;
+AsyncClientClass client(ssl, getNetwork(network));
+
+FirebaseApp app;
+RealtimeDatabase Database;
+AsyncResult result;
+LegacyToken dbSecret(FIREBASE_AUTH);
+
+Adafruit_ADS1115 ads;
+Adafruit_BME680 bme;
+
+unsigned long previousFirebaseTime = 0;
+unsigned long previousMQ7Time = 0;
+int16_t mq7Value = 0;
+int16_t mq135Value = 0;
+
+float mq7Readings[WINDOW_SIZE];
+float mq135Readings[WINDOW_SIZE];
+float dustReadings[WINDOW_SIZE];
+
+int mq7Index = 0;
+int mq135Index = 0;
+int dustIndex = 0;
+
+float mq7Avg = 0;
+float mq135Avg = 0;
+float dustAvg = 0;
+
+tflite::ops::micro::AllOpsResolver resolver;
+tflite::MicroInterpreter* interpreter;
+tflite::Model* model;
+float input[4];
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  delay(1500);
+
+  if (!ads.begin()) {
+    Serial.println("ADS1115 tidak terdeteksi. Cek koneksi!");
     while (1);
   }
+  
+  Serial.println("ADS1115 terdeteksi!");
 
-  tflite::MicroMutableOpResolver<5> resolver;
-  resolver.AddBuiltin(tflite::BuiltinOperator_FULLY_CONNECTED, tflite::ops::micro::Register_FULLY_CONNECTED);
-  resolver.AddBuiltin(tflite::BuiltinOperator_RELU, tflite::ops::micro::Register_RELU);
-  resolver.AddBuiltin(tflite::BuiltinOperator_SOFTMAX, tflite::ops::micro::Register_SOFTMAX);
+  if (!bme.begin()) {
+    Serial.println("BME680 tidak terdeteksi!");
+    while (1);
+  }
+  Serial.println("BME680 terdeteksi!");
 
-  tflite::MicroInterpreter interpreter(model, resolver, tensor_arena, kTensorArenaSize, error_reporter);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  // Menyediakan input dan output tensor
-  TfLiteTensor* input = interpreter.input(0);
-  TfLiteTensor* output = interpreter.output(0);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(300);
+  }
+  Serial.println();
+  Serial.print("Connected with IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.println();
 
-  // Setup fungsi
-  void setup() {
-    Serial.begin(115200);
+  Firebase.printf("Firebase Client v%s\n", FIREBASE_CLIENT_VERSION);
 
-    // Initialize interpreter
-    TfLiteStatus allocate_status = interpreter.AllocateTensors();
-    if (allocate_status != kTfLiteOk) {
-      error_reporter->Report("AllocateTensors() failed");
-      while (1);
+  ssl.setInsecure();
+  initializeApp(client, app, getAuth(dbSecret));
+  app.getApp<RealtimeDatabase>(Database);
+  Database.url(FIREBASE_HOST);
+  client.setAsyncResult(result);
+
+  timeClient.begin();
+  timeClient.update();
+
+  pinMode(GP2Y1014_LED_PIN, OUTPUT);
+
+  model = tflite::GetModel(model_tflite);
+  interpreter = new tflite::MicroInterpreter(model, resolver, tensor_arena, kTensorArenaSize);
+  interpreter->AllocateTensors();
+  
+  Serial.println("ESP32 ready!");
+}
+
+void loop() {
+  timeClient.update();
+
+  time_t epochTime = timeClient.getEpochTime();
+  struct tm timeinfo;
+  localtime_r(&epochTime, &timeinfo);
+
+  char dateTimeString[20];
+  snprintf(dateTimeString, sizeof(dateTimeString), "%04d-%02d-%02d %02d:%02d:%02d",
+            timeinfo.tm_year + 1900,
+            timeinfo.tm_mon + 1,
+            timeinfo.tm_mday,
+            timeinfo.tm_hour,
+            timeinfo.tm_min,
+            timeinfo.tm_sec);
+
+  if (millis() - previousMQ7Time >= MQ7_READ_SENSOR_INTERVAL) {
+    mq7Value = ads.readADC_SingleEnded(MQ7_CHANNEL);
+    previousMQ7Time = millis();
+  }
+
+  mq135Value = ads.readADC_SingleEnded(MQ135_CHANNEL);
+  bool bmeValue = bme.performReading();
+
+  int CO2value = random(0, 100);
+  int COvalue = random(0, 100);
+  int airQualityvalue = random(0, 100);
+  int dustvalue = random(0, 100);
+
+  mq7Readings[mq7Index] = mq7Value;
+  mq135Readings[mq135Index] = mq135Value;
+  dustReadings[dustIndex] = dustValue;
+
+  mq7Avg = calculateMovingAverage(mq7Readings);
+  mq135Avg = calculateMovingAverage(mq135Readings);
+  dustAvg = calculateMovingAverage(dustReadings);
+
+  digitalWrite(GP2Y1014_LED_PIN, LOW);
+  delay(280);
+  int16_t dustValue = ads.readADC_SingleEnded(GP2Y1014_CHANNEL);
+  digitalWrite(GP2Y1014_LED_PIN, HIGH);
+  delay(40);
+
+  input[0] = dustValue;          
+  input[1] = mq135Value;        
+  input[2] = temperature;       
+  input[3] = mq7Value;          
+  
+  float* input_tensor = interpreter->input(0)->data.f;
+  for (int i = 0; i < 4; i++) {
+    input_tensor[i] = input[i];
+  }
+
+  interpreter->Invoke();
+
+  float* output = interpreter->output(0)->data.f;
+
+  int predicted_class = 0;
+  float max_probability = output[0];
+  for (int i = 1; i < 3; i++) {
+    if (output[i] > max_probability) {
+      max_probability = output[i];
+      predicted_class = i;
     }
   }
 
-  // Fungsi untuk memasukkan data sensor ke dalam model
-  void readSensorData() {
-    // Contoh data input, ganti dengan pembacaan sensor sebenarnya
-    input->data.f[0] = 0.2;  // Nilai gas CO2
-    input->data.f[1] = 0.5;  // Nilai gas CO
-    input->data.f[2] = 0.7;  // Kualitas udara
-    input->data.f[3] = 0.3;  // Pembacaan sensor debu
+  // Menampilkan hasil prediksi kelas
+  String label;
+  if (predicted_class == 0) {
+    label = "rendah";
+  } else if (predicted_class == 1) {
+    label = "sedang";
+  } else {
+    label = "tinggi";
   }
 
-  // Inferensi data
-  void runInference() {
-    // Menjalankan inferensi
-    TfLiteStatus invoke_status = interpreter.Invoke();
-    if (invoke_status != kTfLiteOk) {
-      error_reporter->Report("Invoke gagal!");
-      return;
-    }
+  Serial.print("Prediksi kategori: ");
+  Serial.println(label);
 
-    // Output: Mengambil nilai prediksi
-    float low = output->data.f[0];
-    float medium = output->data.f[1];
-    float high = output->data.f[2];
+  mq7Index = (mq7Index + 1) % WINDOW_SIZE;
+  mq135Index = (mq135Index + 1) % WINDOW_SIZE;
+  dustIndex = (dustIndex + 1) % WINDOW_SIZE;
 
-    // Tampilkan hasil prediksi
-    Serial.print("Kategori Rendah: "); Serial.println(low);
-    Serial.print("Kategori Sedang: "); Serial.println(medium);
-    Serial.print("Kategori Tinggi: "); Serial.println(high);
+  delay(1000);
+}
 
-    // Tentukan kategori berdasarkan nilai tertinggi
-    if (low > medium && low > high) {
-      Serial.println("Prediksi: Rendah");
-    } else if (medium > low && medium > high) {
-      Serial.println("Prediksi: Sedang");
-    } else {
-      Serial.println("Prediksi: Tinggi");
-    }
+float calculateMovingAverage(float readings[]) {
+  float sum = 0;
+  for (int i = 0; i < WINDOW_SIZE; i++) {
+    sum += readings[i];
   }
-
-  void loop() {
-    // Membaca data dari sensor
-    readSensorData();
-
-    // Menjalankan inferensi
-    runInference();
-
-    // Tunggu sebelum pembacaan berikutnya
-    delay(2000);
-  }
+  return sum / WINDOW_SIZE;
+}
