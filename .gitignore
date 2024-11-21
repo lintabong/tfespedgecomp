@@ -4,8 +4,9 @@
 
 __pycache__
 
+*BAK.txt
+
 .env
-sensor_data.csv
-sensor_data_labeled.csv
+sensor_*.csv
 *.tflite
 *.h5

@@ -9,6 +9,7 @@
 #include <Adafruit_ADS1X15.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME680.h>
+#include "Adafruit_BME680.h"
 
 #define FIREBASE_HOST "psdatabase-fb5fe-default-rtdb.firebaseio.com"
 #define FIREBASE_AUTH "AIzaSyAeCOk_JF2QCtSxUsRS6gYeESK0Q6zNNnw"
@@ -36,6 +37,7 @@ LegacyToken dbSecret(FIREBASE_AUTH);
 
 Adafruit_ADS1115 ads;
 Adafruit_BME680 bme;
+
 
 unsigned long previousFirebaseTime = 0;
 unsigned long previousMQ7Time = 0;
@@ -84,6 +86,12 @@ void setup(){
   Database.url(FIREBASE_HOST);
   client.setAsyncResult(result);
 
+  bme.setTemperatureOversampling(BME680_OS_8X);
+  bme.setHumidityOversampling(BME680_OS_2X);
+  bme.setPressureOversampling(BME680_OS_4X);
+  bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
+  bme.setGasHeater(320, 150); // 320°C for 150 ms
+
   timeClient.begin();
   timeClient.update();
 
@@ -114,11 +122,6 @@ void loop(){
   mq135Value = ads.readADC_SingleEnded(MQ135_CHANNEL);
   bool bmeValue = bme.performReading();
 
-  int CO2value = random(0, 100);
-  int COvalue = random(0, 100);
-  int airQualityvalue = random(0, 100);
-  int dustvalue = random(0, 100);
-
   digitalWrite(GP2Y1014_LED_PIN, LOW);
   delay(280);
   int16_t dustValue = ads.readADC_SingleEnded(GP2Y1014_CHANNEL);
@@ -140,6 +143,7 @@ void loop(){
     float temperature = bme.temperature;
     float humidity = bme.humidity;
     float pressure = bme.pressure / 100.0;
+    float voc = bme.gas_resistance / 1000.0;
 
     Serial.print("Temperature       : "); Serial.print(temperature); Serial.println(" C");
     Serial.print("Humidity          : "); Serial.print(humidity); Serial.println(" %");
@@ -165,6 +169,8 @@ void loop(){
       delay(20);
       Database.set<int>(client, firebasePathDataSave + "dust", dustValue);
       delay(20);
+      Database.set<int>(client, firebasePathDataSave + "voc", voc);
+      delay(20);
       Database.set<String>(client, firebasePathDataSave + "epoch", String(epochTime));
 
       // Database.set<float>(client, String(FIREBASE_ROOT) + "temperature", temperature);
@@ -180,14 +186,14 @@ void loop(){
   } 
   Serial.println("");
 
-  String message = "";
-  if (CO2value < 30){
-    message = "LOW";
-  } else if (CO2value >= 30 && CO2value < 60){
-    message = "NORMAL";
-  } else {
-    message = "HIGH";
-  }
+  // String message = "";
+  // if (CO2value < 30){
+  //   message = "LOW";
+  // } else if (CO2value >= 30 && CO2value < 60){
+  //   message = "NORMAL";
+  // } else {
+  //   message = "HIGH";
+  // }
 
   // bool status = Database.set<String>(client, "/esptflite/status", message);
   delay(1000);
