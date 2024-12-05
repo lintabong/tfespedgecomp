@@ -1,0 +1,2 @@
+MQ7 -> Tegangan: 0.68 V, Rs: 38.42 kOhm, Ro: 1.42 kOhm
+MQ135 -> Tegangan: 0.61 V, Rs: 43.75 kOhm, Ro: 12.15 kOhm

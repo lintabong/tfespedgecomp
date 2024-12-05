@@ -31,8 +31,10 @@
 #define MQ135_READ_SENSOR_INTERVAL 5000
 // #define WIFI_SSID "ZTE_2.4G_7S9tEA"
 // #define WIFI_PASSWORD "MUKTI234"
-#define WIFI_SSID "Default"
-#define WIFI_PASSWORD "default234"
+#define WIFI_SSID "Jawir Creative Space"
+#define WIFI_PASSWORD "jawirspace"
+// #define WIFI_SSID "Default"
+// #define WIFI_PASSWORD "default234"
 #define MQ7_CHANNEL 2
 #define MQ135_CHANNEL 1
 #define GP2Y1014_CHANNEL 0
@@ -79,7 +81,7 @@ float pressure = 0.00;
 float voc = 0.00;
 
 void printError(int code, const String &msg){
-    Firebase.printf("Error, msg: %s, code: %d\n", msg.c_str(), code);
+  Firebase.printf("Error, msg: %s, code: %d\n", msg.c_str(), code);
 }
 
 void setup(){
@@ -136,7 +138,7 @@ void setup(){
   error_reporter = &micro_error_reporter;
 
   // Load model
-  model = tflite::GetModel(g_model);
+  model = tflite::GetModel(model_feedforward_tflite);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     TF_LITE_REPORT_ERROR(error_reporter,
                          "Model versi %d tidak cocok dengan versi %d.",
